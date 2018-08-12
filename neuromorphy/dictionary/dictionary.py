@@ -10,7 +10,7 @@ import dawg
 import numpy as np
 
 
-def lazy_property(fn):
+def _lazy_property(fn):
     '''Decorator that makes a property lazy-evaluated.
     '''
     attr_name = '_lazy_' + fn.__name__
@@ -38,12 +38,12 @@ class Parse:
         self.word = word
         self.frequency = freq
 
-    @lazy_property
+    @_lazy_property
     def lemma(self):
         cut, append = self._lemmatize_rule_mapping[self.lemmatize_rule_index]
         return (self.word[:-cut] if cut != 0 else self.word) + append
 
-    @lazy_property
+    @_lazy_property
     def grammar_value(self):
         return GrammarValue(self._grammemes_mappings, self._grammar_value_mapping,
                             self._grammar_value_index)

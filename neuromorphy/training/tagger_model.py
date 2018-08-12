@@ -4,13 +4,16 @@ import time
 
 import numpy as np
 import tensorflow as tf
+from tensorflow.contrib.cudnn_rnn import CudnnCompatibleLSTMCell, CudnnLSTM
+from tensorflow.contrib.rnn import DropoutWrapper
 
 from word_embedding_model import WordEmbeddingsModel
 
 
 class TaggerModel:
     def __init__(self, chars_count, chars_matrix, grammemes_matrix, word_emb_dim, labels_count, lemma_labels_count,
-                 train_generator, val_generator=None, word_to_index=None, word_embeddings=None):
+                 train_generator, val_generator=None, is_cuda=False, rnn_dim=128,
+                 word_to_index=None, word_embeddings=None):
 
         with tf.Graph().as_default() as graph:
             self._word_embedding_model = \
@@ -19,7 +22,7 @@ class TaggerModel:
 
             words, labels, lemma_labels = self._build_dataset_iterators(train_generator, val_generator)
 
-            self._training = tf.placeholder_with_default(False, shape=())
+            self._is_training = tf.placeholder_with_default(False, shape=())
             self._loss = 0.
             self._accuracies = []
             self._reset_ops = []
@@ -30,37 +33,20 @@ class TaggerModel:
                                                name='grammemes_matrix', dtype=tf.float32)
 
                 grammemes_input = tf.nn.embedding_lookup(grammemes_matrix, words, name='grammemes_vector_lookup')
-                grammemes_input = tf.layers.dropout(grammemes_input, 0.2, training=self._training,
+                grammemes_input = tf.layers.dropout(grammemes_input, 0.2, training=self._is_training,
                                                     noise_shape=tf.concat([tf.shape(grammemes_input)[:-1], [1]],
                                                                           axis=0))
                 grammemes_embedding = tf.layers.dense(grammemes_input, 64, activation='elu')
 
             with tf.variable_scope('encoder'):
                 outputs = tf.concat([word_embedding, grammemes_embedding], axis=-1)
-                outputs = tf.layers.dropout(outputs, 0.3, training=self._training,
-                                            noise_shape=tf.concat([[1], tf.shape(outputs)[1:]], axis=0))
+                outputs = self._build_rnn('bilstm-1', is_cuda, rnn_dim, outputs,
+                                          state_dropout_rate=0.3, output_dropout_rate=0.3)
 
-                # TODO: create cpu-compatible cell if cuda is not available
-                lstm_cell = tf.contrib.cudnn_rnn.CudnnLSTM(num_layers=1, num_units=128,
-                                                           direction='bidirectional', name='bilstm-1')
-                outputs, _ = lstm_cell(outputs)
-                outputs = tf.layers.dropout(outputs, 0.3, training=self._training,
-                                            noise_shape=tf.concat([[1], tf.shape(outputs)[1:]], axis=0))
+                self._build_pos_lm(labels, labels_count, outputs, rnn_dim)
 
-                padding_vector = tf.cast(tf.fill([1, tf.shape(labels)[1]], value=labels_count), dtype=tf.int64)
-                shift_forward_labels = tf.concat([labels[1:], padding_vector], axis=0)
-                forward_output = outputs[:, :, :128]
-                self._build_output('forward', forward_output, shift_forward_labels, labels_count + 1, proj_dim=128)
-
-                shift_backward_labels = tf.concat([padding_vector, labels[:-1]], axis=0)
-                backward_output = outputs[:, :, 128:]
-                self._build_output('backward', backward_output, shift_backward_labels, labels_count + 1, proj_dim=128)
-
-                lstm_cell = tf.contrib.cudnn_rnn.CudnnLSTM(num_layers=1, num_units=128,
-                                                           direction='bidirectional', name='bilstm-2')
-                outputs, _ = lstm_cell(outputs)
-                outputs = tf.layers.dropout(outputs, 0.15, training=self._training,
-                                            noise_shape=tf.concat([[1], tf.shape(outputs)[1:]], axis=0))
+                outputs = self._build_rnn('bilstm-2', is_cuda, rnn_dim, outputs,
+                                          state_dropout_rate=0.3, output_dropout_rate=0.15)
 
             self._build_output('grammar_vals', outputs, labels, labels_count, proj_dim=128)
             self._build_output('lemmas', outputs, lemma_labels, lemma_labels_count, proj_dim=128)
@@ -104,13 +90,7 @@ class TaggerModel:
 
     def _build_dataset_iterators(self, train_generator, val_generator):
         self._train_batchs_count = train_generator.batchs_count
-        train_dataset = tf.data.Dataset() \
-            .from_generator(lambda: train_generator,
-                            output_types=(tf.int64, tf.int64, tf.int64),
-                            output_shapes=(tf.TensorShape([None, None]),
-                                           tf.TensorShape([None, None]),
-                                           tf.TensorShape([None, None]))) \
-            .prefetch(5)
+        train_dataset = train_generator.make_dataset()
 
         dataset_iter = tf.data.Iterator.from_structure(train_dataset.output_types,
                                                        train_dataset.output_shapes)
@@ -118,26 +98,47 @@ class TaggerModel:
 
         if val_generator is not None:
             self._val_batchs_count = val_generator.batchs_count
-            val_dataset = tf.data.Dataset() \
-                .from_generator(lambda: val_generator,
-                                output_types=(tf.int64, tf.int64, tf.int64),
-                                output_shapes=(tf.TensorShape([None, None]),
-                                               tf.TensorShape([None, None]),
-                                               tf.TensorShape([None, None]))) \
-                .prefetch(5)
-
-            self._val_init_op = dataset_iter.make_initializer(val_dataset)
+            self._val_init_op = dataset_iter.make_initializer(val_generator.make_dataset())
         else:
             self._val_batchs_count = 0
             self._val_init_op = None
 
         return dataset_iter.get_next()
 
+    def _build_rnn(self, name, is_cuda, rnn_dim, inputs, state_dropout_rate, output_dropout_rate):
+        with tf.variable_scope(name):
+            if is_cuda:
+                lstm_cell = CudnnLSTM(num_layers=1, num_units=rnn_dim, direction='bidirectional')
+                outputs, _ = lstm_cell(inputs)
+            else:
+                state_keep_prob = 1. - state_dropout_rate * tf.cast(self._is_training, tf.float32)
+                single_cell = lambda: DropoutWrapper(CudnnCompatibleLSTMCell(rnn_dim),
+                                                     state_keep_prob=state_keep_prob,
+                                                     variational_recurrent=True,
+                                                     input_size=inputs.get_shape()[-1],
+                                                     dtype=tf.float32)
+                outputs, _ = tf.nn.bidirectional_dynamic_rnn(
+                    single_cell(), single_cell(), inputs, time_major=True, dtype=tf.float32)
+                outputs = tf.concat(outputs, axis=-1)
+        outputs = tf.layers.dropout(outputs, output_dropout_rate, training=self._is_training,
+                                    noise_shape=tf.concat([[1], tf.shape(outputs)[1:]], axis=0))
+        return outputs
+
+    def _build_pos_lm(self, labels, labels_count, inputs, rnn_dim):
+        padding_vector = tf.cast(tf.fill([1, tf.shape(labels)[1]], value=labels_count), dtype=tf.int64)
+        shift_forward_labels = tf.concat([labels[1:], padding_vector], axis=0)
+        forward_output = inputs[:, :, :rnn_dim]
+        self._build_output('forward', forward_output, shift_forward_labels, labels_count + 1, proj_dim=128)
+
+        shift_backward_labels = tf.concat([padding_vector, labels[:-1]], axis=0)
+        backward_output = inputs[:, :, rnn_dim:]
+        self._build_output('backward', backward_output, shift_backward_labels, labels_count + 1, proj_dim=128)
+
     def _build_output(self, name, inputs, labels, labels_count, proj_dim=-1):
         with tf.variable_scope(name + '_output'):
             if proj_dim != -1:
                 inputs = tf.layers.dense(inputs, units=proj_dim, activation=tf.nn.relu, name='output_proj')
-                inputs = tf.layers.dropout(inputs, 0.2, training=self._training)
+                inputs = tf.layers.dropout(inputs, 0.2, training=self._is_training)
             logits = tf.layers.dense(inputs, labels_count, name='output')
             preds = tf.argmax(logits, axis=-1)
 
@@ -187,7 +188,7 @@ class TaggerModel:
         for i in range(batchs_count):
             loss, fw_acc, bw_acc, grammar_val_acc, lemma_acc = \
                 self._sess.run([self._loss] + self._accuracies + train_step,
-                               feed_dict={self._training: is_train})[:5]
+                               feed_dict={self._is_training: is_train})[:5]
             total_loss += loss
 
             print('\rBatch = {} / {}. Loss = {:.4f}. '

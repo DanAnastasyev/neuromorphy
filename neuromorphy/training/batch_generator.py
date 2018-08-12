@@ -5,6 +5,7 @@ import math
 from typing import Mapping, List, Union
 
 import numpy as np
+import tensorflow as tf
 
 from data_info_builder import DataInfoBuilder
 from corpus_iterator import CorpusIterator
@@ -136,3 +137,11 @@ class BatchGenerator:
     @property
     def batchs_count(self) -> int:
         return sum(gen.batchs_count for gen in self._generators)
+
+    def make_dataset(self) -> tf.data.Dataset:
+        return tf.data.Dataset() \
+                      .from_generator(lambda: self,
+                                      output_types=(tf.int64, tf.int64, tf.int64),
+                                      output_shapes=(tf.TensorShape([None, None]),
+                                                     tf.TensorShape([None, None]),
+                                                     tf.TensorShape([None, None])))
