@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 
-from dictionary.dictionary import MorphoAnalyser
-from data_info_builder import DataInfoBuilder
-from tagger_model import TaggerModel
-from batch_generator import BatchGenerator
-from corpus_iterator import CorpusIterator
+from ..dictionary.dictionary import MorphoAnalyser
+from .data_info_builder import DataInfoBuilder
+from .tagger_model import TaggerModel
+from .batch_generator import BatchGenerator
+from .corpus_iterator import CorpusIterator
 
 
 class ModelTrainer:

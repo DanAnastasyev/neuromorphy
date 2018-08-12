@@ -7,7 +7,7 @@ import tensorflow as tf
 from tensorflow.contrib.cudnn_rnn import CudnnCompatibleLSTMCell, CudnnLSTM
 from tensorflow.contrib.rnn import DropoutWrapper
 
-from word_embedding_model import WordEmbeddingsModel
+from .word_embedding_model import WordEmbeddingsModel
 
 
 class TaggerModel:

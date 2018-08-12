@@ -7,8 +7,8 @@ from typing import Tuple, Set, Mapping, List
 
 import numpy as np
 
-from corpus_iterator import CorpusIterator
-from dictionary.dictionary import MorphoAnalyser
+from ..dictionary.dictionary import MorphoAnalyser
+from .corpus_iterator import CorpusIterator
 
 
 class DataInfoBuilder:
