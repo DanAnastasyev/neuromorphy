@@ -2,13 +2,15 @@
 
 from collections import Counter
 from string import punctuation
+import os
 from os.path import commonprefix
+import pickle
 from typing import Tuple, Set, Mapping, List
 
 import numpy as np
 
-from ..dictionary.dictionary import MorphoAnalyser
-from .corpus_iterator import CorpusIterator
+from neuromorphy.dictionary import MorphoAnalyser
+from neuromorphy.training.corpus_iterator import CorpusIterator
 
 
 class DataInfoBuilder:
@@ -185,6 +187,24 @@ class DataInfoBuilder:
     @property
     def word_index(self):
         return self._word_index
+
+    def save(self, path):
+        with open(os.path.join(path, 'data_info.pkl'), 'wb') as f:
+            pickle.dump((
+                self._lemmatize_rule_mapping, self._label_index, self._char_index,
+                self._word_index, self._max_word_len
+            ), file=f, protocol=pickle.HIGHEST_PROTOCOL)
+        np.savez(os.path.join(path, 'embeddings.npz'),
+                 grammemes_matrix=self._grammemes_matrix, chars_matrix=self._chars_matrix)
+
+    def restore(self, path):
+        with open(os.path.join(path, 'data_info.pkl'), 'rb') as f:
+            (self._lemmatize_rule_mapping, self._label_index, self._char_index,
+                self._word_index, self._max_word_len) = pickle.load(f)
+
+        embeddings = np.load(os.path.join(path, 'embeddings.npz'))
+        self._grammemes_matrix = embeddings['grammemes_matrix']
+        self._chars_matrix = embeddings['chars_matrix']
 
 
 def main():

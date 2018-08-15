@@ -9,6 +9,6 @@ setup(
         'dawg >= 0.7.8',
         'tensorflow >= 1.9',
         'gensim >= 3.4.0',
-        'attr >= 0.3.1',
+        'attrs >= 17.4.0',
     ],
 )

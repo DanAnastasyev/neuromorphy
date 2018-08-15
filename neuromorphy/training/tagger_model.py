@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import os
 import time
 
 import numpy as np
@@ -7,7 +8,7 @@ import tensorflow as tf
 from tensorflow.contrib.cudnn_rnn import CudnnCompatibleLSTMCell, CudnnLSTM
 from tensorflow.contrib.rnn import DropoutWrapper
 
-from .word_embedding_model import WordEmbeddingsModel
+from neuromorphy.training.word_embedding_model import WordEmbeddingsModel
 
 
 class TaggerModel:
@@ -61,6 +62,7 @@ class TaggerModel:
 
             self._sess = tf.Session(graph=graph)
             self._sess.run(tf.global_variables_initializer())
+            self._saver = tf.train.Saver()
 
     def _build_word_embedding_model(self, chars_count, chars_matrix, word_emb_dim,
                                     word_to_index, word_embeddings, graph):
@@ -203,3 +205,11 @@ class TaggerModel:
 
         self._sess.run(self._reset_ops)
         return total_loss / batchs_count, grammar_val_acc, lemma_acc
+
+    def save(self, path):
+        if not os.path.isdir(path):
+            os.makedirs(path)
+        self._saver.save(self._sess, os.path.join(path, 'model.chkp'))
+
+    def restore(self, path):
+        self._saver.restore(self._sess, os.path.join(path, 'model.chkp'))

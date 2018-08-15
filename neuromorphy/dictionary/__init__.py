@@ -1,1 +1,1 @@
-from .dictionary import MorphoAnalyser
+from neuromorphy.dictionary.dictionary import MorphoAnalyser

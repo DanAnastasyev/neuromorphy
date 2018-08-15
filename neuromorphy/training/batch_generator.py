@@ -7,8 +7,8 @@ from typing import Mapping, List, Union
 import numpy as np
 import tensorflow as tf
 
-from .data_info_builder import DataInfoBuilder
-from .corpus_iterator import CorpusIterator
+from neuromorphy.training.data_info_builder import DataInfoBuilder
+from neuromorphy.training.corpus_iterator import CorpusIterator
 
 
 class BatchGenerator:
