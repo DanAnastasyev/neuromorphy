@@ -5,7 +5,7 @@ from typing import Tuple, List
 import attr
 
 
-@attr.s
+@attr.s(frozen=True)
 class Token:
     token: str = attr.ib()
     lemma: str = attr.ib()

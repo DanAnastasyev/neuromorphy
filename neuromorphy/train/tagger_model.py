@@ -8,7 +8,7 @@ import tensorflow as tf
 from tensorflow.contrib.cudnn_rnn import CudnnCompatibleLSTMCell, CudnnLSTM
 from tensorflow.contrib.rnn import DropoutWrapper
 
-from neuromorphy.training.word_embedding_model import WordEmbeddingsModel
+from neuromorphy.train.word_embedding_model import WordEmbeddingsModel
 
 
 class TaggerModel:
@@ -42,12 +42,12 @@ class TaggerModel:
             with tf.variable_scope('encoder'):
                 outputs = tf.concat([word_embedding, grammemes_embedding], axis=-1)
                 outputs = self._build_rnn('bilstm-1', is_cuda, rnn_dim, outputs,
-                                          state_dropout_rate=0.3, output_dropout_rate=0.3)
+                                          state_dropout_rate=0.2, output_dropout_rate=0.2)
 
                 self._build_pos_lm(labels, labels_count, outputs, rnn_dim)
 
                 outputs = self._build_rnn('bilstm-2', is_cuda, rnn_dim, outputs,
-                                          state_dropout_rate=0.3, output_dropout_rate=0.15)
+                                          state_dropout_rate=0.2, output_dropout_rate=0.15)
 
             self._build_output('grammar_vals', outputs, labels, labels_count, proj_dim=128)
             self._build_output('lemmas', outputs, lemma_labels, lemma_labels_count, proj_dim=128)

@@ -1,1 +1,0 @@
-from neuromorphy.training.model_trainer import ModelTrainer

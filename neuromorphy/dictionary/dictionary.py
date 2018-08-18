@@ -3,7 +3,7 @@
 import os
 from zipfile import ZipFile
 from tempfile import TemporaryDirectory
-from typing import Tuple, List, Callable
+from typing import Tuple, List, Callable, Sequence
 import pickle
 
 import dawg
@@ -151,11 +151,11 @@ class MorphoAnalyser:
                      word, grammar_val_index, lemmatize_rule_index, freq)
 
     @property
-    def grammemes_count(self):
+    def grammemes_count(self) -> int:
         return self._grammemes_matrix.shape[1]
 
     @property
-    def lemmatize_rule_mapping(self):
+    def lemmatize_rule_mapping(self) -> Sequence[Tuple[int, str]]:
         return self._lemmatize_rule_mapping
 
 

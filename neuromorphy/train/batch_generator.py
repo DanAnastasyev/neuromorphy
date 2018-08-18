@@ -7,8 +7,8 @@ from typing import Mapping, List, Union
 import numpy as np
 import tensorflow as tf
 
-from neuromorphy.training.data_info_builder import DataInfoBuilder
-from neuromorphy.training.corpus_iterator import CorpusIterator
+from neuromorphy.train.data_info_builder import DataInfo
+from neuromorphy.train.corpus_iterator import CorpusIterator
 
 
 class BatchGenerator:
@@ -37,7 +37,7 @@ class BatchGenerator:
         def batchs_count(self):
             return self._max_count
 
-    def __init__(self, data_info: DataInfoBuilder, corpus_iterator: CorpusIterator, batch_size: int=1024):
+    def __init__(self, data_info: DataInfo, corpus_iterator: CorpusIterator, batch_size: int=1024):
         self._data_info = data_info
         self._batch_size = batch_size
 
