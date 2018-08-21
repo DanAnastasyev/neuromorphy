@@ -7,7 +7,7 @@ from typing import Mapping, List, Union
 import numpy as np
 import tensorflow as tf
 
-from neuromorphy.train.data_info_builder import DataInfo
+from neuromorphy.train.data_info import DataInfo
 from neuromorphy.train.corpus_iterator import CorpusIterator
 
 

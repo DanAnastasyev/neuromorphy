@@ -2,70 +2,80 @@
 
 import os
 import time
+import math
 
 import numpy as np
 import tensorflow as tf
 from tensorflow.contrib.cudnn_rnn import CudnnCompatibleLSTMCell, CudnnLSTM
 from tensorflow.contrib.rnn import DropoutWrapper
 
+from neuromorphy.train.data_info import DataInfo
 from neuromorphy.train.word_embedding_model import WordEmbeddingsModel
 
 
 class TaggerModel:
-    def __init__(self, chars_count, chars_matrix, grammemes_matrix, word_emb_dim, labels_count, lemma_labels_count,
-                 train_generator, val_generator=None, is_cuda=False, rnn_dim=128,
-                 word_to_index=None, word_embeddings=None):
+    def __init__(self, is_train, data_info: DataInfo, word_emb_dim, train_generator, val_generator=None, is_cuda=False,
+                 rnn_dim=128, use_pos_lm=True, word_to_index=None, word_embeddings=None):
+
+        self._is_train_mode = is_train
+        self._data_info = data_info
+        self._word_emb_dim = word_emb_dim
+        self._use_pos_lm = use_pos_lm
 
         with tf.Graph().as_default() as graph:
             self._word_embedding_model = \
-                self._build_word_embedding_model(chars_count, chars_matrix, word_emb_dim,
-                                                 word_to_index, word_embeddings, graph)
+                self._build_word_embedding_model(word_to_index, word_embeddings, graph)
 
-            words, labels, lemma_labels = self._build_dataset_iterators(train_generator, val_generator)
+            if self._is_train_mode:
+                words, labels, lemma_labels = self._build_dataset_iterators(train_generator, val_generator)
+            else:
+                self._chars = \
+                    tf.placeholder(dtype=tf.int32, shape=[None, None, self._data_info._max_word_len], name='chars')
+                self._grammemems = \
+                    tf.placeholder(dtype=tf.float32, shape=[None, None, self._data_info._grammemes_matrix.shape[-1]],
+                                   name='grammemems')
+
+                words = (self._chars, self._grammemems)
+                labels, lemma_labels = None, None
 
             self._is_training = tf.placeholder_with_default(False, shape=())
             self._loss = 0.
             self._accuracies = []
             self._reset_ops = []
 
-            word_embedding = self._word_embedding_model(words)
-            with tf.variable_scope('grammemes_input'):
-                grammemes_matrix = tf.Variable(initial_value=grammemes_matrix, trainable=False,
-                                               name='grammemes_matrix', dtype=tf.float32)
-
-                grammemes_input = tf.nn.embedding_lookup(grammemes_matrix, words, name='grammemes_vector_lookup')
-                grammemes_input = tf.layers.dropout(grammemes_input, 0.2, training=self._is_training,
-                                                    noise_shape=tf.concat([tf.shape(grammemes_input)[:-1], [1]],
-                                                                          axis=0))
-                grammemes_embedding = tf.layers.dense(grammemes_input, 64, activation='elu')
+            self._word_embeddings = self._word_embedding_model(words)
+            self._word_emb_dim = self._word_embeddings.get_shape()[-1].value
+            outputs = self._word_embeddings
 
             with tf.variable_scope('encoder'):
-                outputs = tf.concat([word_embedding, grammemes_embedding], axis=-1)
+                outputs = tf.layers.dropout(outputs, 0.3, training=self._is_training,
+                                            noise_shape=tf.concat([[1], tf.shape(outputs)[1:]], axis=0))
                 outputs = self._build_rnn('bilstm-1', is_cuda, rnn_dim, outputs,
-                                          state_dropout_rate=0.2, output_dropout_rate=0.2)
+                                          state_dropout_rate=0.2, output_dropout_rate=0.3)
 
-                self._build_pos_lm(labels, labels_count, outputs, rnn_dim)
+                if self._is_train_mode and self._use_pos_lm:
+                    self._build_pos_lm(labels, self._data_info.labels_count, outputs, rnn_dim)
 
                 outputs = self._build_rnn('bilstm-2', is_cuda, rnn_dim, outputs,
-                                          state_dropout_rate=0.2, output_dropout_rate=0.15)
+                                          state_dropout_rate=0.2, output_dropout_rate=0.2)
 
-            self._build_output('grammar_vals', outputs, labels, labels_count, proj_dim=128)
-            self._build_output('lemmas', outputs, lemma_labels, lemma_labels_count, proj_dim=128)
+            self._grammar_val_pred = self._build_output('grammar_vals', outputs, labels, self._data_info.labels_count)
+            self._lemma_pred = self._build_output('lemmas', outputs, lemma_labels, self._data_info.lemma_labels_count)
 
-            with tf.variable_scope('optimizer'):
-                optimizer = tf.train.AdamOptimizer()
+            if self._is_train_mode:
+                with tf.variable_scope('optimizer'):
+                    optimizer = tf.train.AdamOptimizer()
 
-                grads, variables = zip(*optimizer.compute_gradients(self._loss))
-                grads, norms = tf.clip_by_global_norm(grads, 5.)
-                self._train_step = optimizer.apply_gradients(zip(grads, variables),
-                                                             tf.train.get_or_create_global_step())
+                    grads, variables = zip(*optimizer.compute_gradients(self._loss))
+                    grads, norms = tf.clip_by_global_norm(grads, 5.)
+                    self._train_step = optimizer.apply_gradients(zip(grads, variables),
+                                                                 tf.train.get_or_create_global_step())
 
             self._sess = tf.Session(graph=graph)
             self._sess.run(tf.global_variables_initializer())
             self._saver = tf.train.Saver()
 
-    def _build_word_embedding_model(self, chars_count, chars_matrix, word_emb_dim,
-                                    word_to_index, word_embeddings, graph):
+    def _build_word_embedding_model(self,  word_to_index, word_embeddings, graph):
         if word_embeddings is not None:
             known_words = set(word_embeddings.wv.index2word) & set(word_to_index.keys())
             word2index_in = {word: word_to_index[word] for word in known_words}
@@ -78,13 +88,15 @@ class TaggerModel:
             for _, (index, word_vectors_index) in word2index_out.items():
                 embeddings[index] = word_embeddings.wv.vectors[word_vectors_index]
 
-            assert word_emb_dim == embeddings.shape[1]
+            assert self._word_emb_dim == embeddings.shape[1]
         else:
             data, labels, embeddings = None, None, None
 
-        word_emb_model = WordEmbeddingsModel(chars_count=chars_count,
-                                             chars_matrix=chars_matrix,
-                                             output_dim=word_emb_dim,
+        word_emb_model = WordEmbeddingsModel(is_train=self._is_train_mode,
+                                             chars_count=self._data_info.chars_count,
+                                             chars_matrix=self._data_info.chars_matrix,
+                                             grammemes_matrix=self._data_info.grammemes_matrix,
+                                             output_dim=self._word_emb_dim,
                                              train_data=data, train_labels=labels,
                                              word_embeddings=embeddings,
                                              graph=graph)
@@ -114,13 +126,14 @@ class TaggerModel:
                 outputs, _ = lstm_cell(inputs)
             else:
                 state_keep_prob = 1. - state_dropout_rate * tf.cast(self._is_training, tf.float32)
-                single_cell = lambda: DropoutWrapper(CudnnCompatibleLSTMCell(rnn_dim),
-                                                     state_keep_prob=state_keep_prob,
-                                                     variational_recurrent=True,
-                                                     input_size=inputs.get_shape()[-1],
-                                                     dtype=tf.float32)
-                outputs, _ = tf.nn.bidirectional_dynamic_rnn(
-                    single_cell(), single_cell(), inputs, time_major=True, dtype=tf.float32)
+                with tf.variable_scope('cudnn_lstm'):
+                    single_cell = lambda: DropoutWrapper(CudnnCompatibleLSTMCell(rnn_dim),
+                                                         state_keep_prob=state_keep_prob,
+                                                         variational_recurrent=True,
+                                                         input_size=inputs.get_shape()[-1],
+                                                         dtype=tf.float32)
+                    outputs, _, _ = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(
+                        [single_cell()], [single_cell()], inputs, time_major=True, dtype=tf.float32)
                 outputs = tf.concat(outputs, axis=-1)
         outputs = tf.layers.dropout(outputs, output_dropout_rate, training=self._is_training,
                                     noise_shape=tf.concat([[1], tf.shape(outputs)[1:]], axis=0))
@@ -130,50 +143,54 @@ class TaggerModel:
         padding_vector = tf.cast(tf.fill([1, tf.shape(labels)[1]], value=labels_count), dtype=tf.int64)
         shift_forward_labels = tf.concat([labels[1:], padding_vector], axis=0)
         forward_output = inputs[:, :, :rnn_dim]
-        self._build_output('forward', forward_output, shift_forward_labels, labels_count + 1, proj_dim=128)
+        self._build_output('pos_lm', forward_output, shift_forward_labels, labels_count + 1, proj_dim=128)
 
         shift_backward_labels = tf.concat([padding_vector, labels[:-1]], axis=0)
         backward_output = inputs[:, :, rnn_dim:]
-        self._build_output('backward', backward_output, shift_backward_labels, labels_count + 1, proj_dim=128)
+        self._build_output('pos_lm', backward_output, shift_backward_labels, labels_count + 1, proj_dim=128, reuse=True)
 
-    def _build_output(self, name, inputs, labels, labels_count, proj_dim=-1):
-        with tf.variable_scope(name + '_output'):
+    def _build_output(self, name, inputs, labels, labels_count, proj_dim=-1, reuse=False):
+        with tf.variable_scope(name + '_output', reuse=reuse):
             if proj_dim != -1:
-                inputs = tf.layers.dense(inputs, units=proj_dim, activation=tf.nn.relu, name='output_proj')
-                inputs = tf.layers.dropout(inputs, 0.2, training=self._is_training)
+                with tf.variable_scope(name + '_output_proj', reuse=False):
+                    inputs = tf.layers.dense(inputs, units=proj_dim, activation=tf.nn.relu)
+                    inputs = tf.layers.dropout(inputs, 0.2, training=self._is_training)
             logits = tf.layers.dense(inputs, labels_count, name='output')
             preds = tf.argmax(logits, axis=-1)
 
-        with tf.variable_scope(name + '_loss'):
-            losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels)
-            mask = tf.cast(tf.not_equal(labels, 0), dtype=tf.float32)
-            non_zeros_count = tf.reduce_sum(mask)
-            self._loss += tf.reduce_sum(losses * mask) / non_zeros_count
+        if self._is_train_mode:
+            with tf.variable_scope(name + '_loss' + ('_' if reuse else '')):
+                losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels)
+                mask = tf.cast(tf.not_equal(labels, 0), dtype=tf.float32)
+                non_zeros_count = tf.reduce_sum(mask)
+                self._loss += tf.reduce_sum(losses * mask) / non_zeros_count
 
-        with tf.variable_scope(name + '_accuracy'):
-            correct_count = tf.get_variable(name='correct_count', shape=(), dtype=tf.float32,
-                                            initializer=tf.zeros_initializer(), trainable=False)
-            total_count = tf.get_variable(name='total_count', shape=(), dtype=tf.float32,
-                                          initializer=tf.zeros_initializer(), trainable=False)
+            with tf.variable_scope(name + '_accuracy' + ('_' if reuse else '')):
+                correct_count = tf.get_variable(name='correct_count', shape=(), dtype=tf.float32,
+                                                initializer=tf.zeros_initializer(), trainable=False)
+                total_count = tf.get_variable(name='total_count', shape=(), dtype=tf.float32,
+                                              initializer=tf.zeros_initializer(), trainable=False)
 
-            correct_count = \
-                correct_count.assign_add(tf.reduce_sum(tf.cast(tf.equal(preds, labels), dtype=tf.float32) * mask))
-            total_count = total_count.assign_add(non_zeros_count)
-            accuracy = tf.cond(tf.not_equal(total_count, 0.),
-                               lambda: correct_count / total_count,
-                               lambda: 0.)
+                correct_count = \
+                    correct_count.assign_add(tf.reduce_sum(tf.cast(tf.equal(preds, labels), dtype=tf.float32) * mask))
+                total_count = total_count.assign_add(non_zeros_count)
+                accuracy = tf.cond(tf.not_equal(total_count, 0.),
+                                   lambda: correct_count / total_count,
+                                   lambda: 0.)
 
-            self._accuracies.append(accuracy)
-            self._reset_ops.append(tf.assign(correct_count, 0.))
-            self._reset_ops.append(tf.assign(total_count, 0.))
+                self._accuracies.append(accuracy)
+                self._reset_ops.append(tf.assign(correct_count, 0.))
+                self._reset_ops.append(tf.assign(total_count, 0.))
+        return preds
 
     def fit(self, epochs_count=100):
-        if self._word_embedding_model.can_be_pretrained:
+        if self._is_train_mode and self._word_embedding_model.can_be_pretrained:
             self._word_embedding_model.fit(500)
 
         for epoch in range(epochs_count):
-            self._sess.run(self._train_init_op)
-            self._run_epoch(epoch, epochs_count, is_train=True)
+            if self._is_train_mode:
+                self._sess.run(self._train_init_op)
+                self._run_epoch(epoch, epochs_count, is_train=True)
 
             if self._val_init_op is not None:
                 self._sess.run(self._val_init_op)
@@ -186,25 +203,29 @@ class TaggerModel:
 
         start_time = time.time()
         train_step = [self._train_step] if is_train else []
-        grammar_val_acc, lemma_acc, fw_acc, bw_acc = 0., 0., 0., 0.
+        grammar_val_acc, lemma_acc = 0., 0.
         for i in range(batchs_count):
-            loss, fw_acc, bw_acc, grammar_val_acc, lemma_acc = \
-                self._sess.run([self._loss] + self._accuracies + train_step,
-                               feed_dict={self._is_training: is_train})[:5]
+            accuracies = self._accuracies[2:] if self._use_pos_lm else self._accuracies
+            loss, grammar_val_acc, lemma_acc = \
+                self._sess.run([self._loss] + accuracies + train_step,
+                               feed_dict={self._is_training: is_train})[:3]
             total_loss += loss
 
             print('\rBatch = {} / {}. Loss = {:.4f}. '
-                  'Acc = {:.2%}. Lemma Acc = {:.2%}. Forward Acc = {:.2%}. Backward Acc = {:.2%}'.format(
-                i, batchs_count, loss, grammar_val_acc, lemma_acc, fw_acc, bw_acc), end='')
+                  'Acc = {:.2%}. Lemma Acc = {:.2%}.'.format(
+                i, batchs_count, loss, grammar_val_acc, lemma_acc), end='')
 
         print('\r' + (' ' * 180), end='')
-        print('\rEpoch = {} / {}. Time = {:05.2f} s. {:>5s} Loss = {:.4f}. '
-              'Acc = {:.2%}. Lemma Acc = {:.2%}. Forward Acc = {:.2%}. Backward Acc = {:.2%}'.format(
+        print('\rEpoch = {} / {}. Time = {:05.2f} s. {:>5s} Loss = {:.4f}. Acc = {:.2%}. Lemma Acc = {:.2%}.'.format(
             epoch + 1, epochs_count, time.time() - start_time, name,
-            total_loss / batchs_count, grammar_val_acc, lemma_acc, fw_acc, bw_acc))
+            total_loss / batchs_count, grammar_val_acc, lemma_acc), end='')
 
         self._sess.run(self._reset_ops)
         return total_loss / batchs_count, grammar_val_acc, lemma_acc
+
+    def predict(self, chars, grammemes):
+        return self._sess.run(fetches=[self._grammar_val_pred, self._lemma_pred],
+                              feed_dict={self._chars: chars, self._grammemems: grammemes})
 
     def save(self, path):
         if not os.path.isdir(path):

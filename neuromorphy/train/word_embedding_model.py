@@ -6,17 +6,20 @@ import numpy as np
 import tensorflow as tf
 
 class WordEmbeddingsModel:
-    def __init__(self, chars_count: int, chars_matrix: np.ndarray, output_dim: int, train_data: np.ndarray=None,
-                 train_labels: np.ndarray=None, word_embeddings: np.ndarray=None, graph: tf.Graph=None):
+    def __init__(self, is_train: bool, chars_count: int, chars_matrix: np.ndarray, grammemes_matrix: np.ndarray,
+                 output_dim: int, train_data: np.ndarray=None, train_labels: np.ndarray=None,
+                 word_embeddings: np.ndarray=None, graph: tf.Graph=None):
 
+        self._is_train_mode = is_train
         self._chars_count = chars_count
         self._chars_matrix = chars_matrix
+        self._grammemes_matrix = grammemes_matrix
         self._output_dim = output_dim
 
         self._model = None
         self._can_be_pretrained = all(param is not None for param in (train_data, train_labels, word_embeddings))
         self._sess = None
-        self._training = None
+        self._is_training = None
         self._train_batchs_count = None
         self._train_init_op = None
         self._train_step = None
@@ -29,9 +32,9 @@ class WordEmbeddingsModel:
         with graph.as_default():
             with tf.variable_scope('word_vector_train'):
                 train_generator = tf.data.Dataset() \
-                    .from_tensor_slices((train_data, train_labels)) \
-                    .batch(128) \
-                    .shuffle(len(train_data))
+                                         .from_tensor_slices((train_data, train_labels)) \
+                                         .batch(128) \
+                                         .shuffle(len(train_data))
 
                 self._train_batchs_count = train_data.shape[0] // 128
                 iterator = tf.data.Iterator.from_structure(train_generator.output_types,
@@ -41,7 +44,7 @@ class WordEmbeddingsModel:
 
                 data, labels = iterator.get_next()
 
-            self._training = tf.placeholder_with_default(False, shape=())
+            self._is_training = tf.placeholder_with_default(False, shape=())
 
             self._model = self._build_model()
             word_vectors = self._model(data)
@@ -72,22 +75,42 @@ class WordEmbeddingsModel:
                                        name='chars_matrix', dtype=tf.int32)
             chars_embeddings_matrix = tf.get_variable(name='embeddings', shape=[self._chars_count, 24],
                                                       dtype=tf.float32)
-            word_embedding_dense_1 = tf.layers.Dense(512, activation=tf.nn.relu)
-            word_embedding_dense_2 = tf.layers.Dense(128)
+            word_embedding_dense_1 = tf.layers.Dense(512, name='dense', activation=tf.nn.relu)
+            word_embedding_dense_2 = tf.layers.Dense(128, name='dense_1')
+
+        with tf.variable_scope('grammemes_input'):
+            grammemes_matrix = tf.Variable(initial_value=self._grammemes_matrix, trainable=False,
+                                           name='grammemes_matrix', dtype=tf.float32)
+            grammemes_embedding_dense = tf.layers.Dense(64, name='dense')
 
         def _apply(data):
-            with tf.variable_scope('word_embedding_model'):
-                chars_input = tf.nn.embedding_lookup(chars_matrix, data, name='chars_vector_lookup')
+            assert self._is_train_mode or isinstance(data, (list, tuple)) and len(data) == 2
+
+            with tf.variable_scope('chars_embedding'):
+                if not self._is_train_mode:
+                    chars_input = data[0]
+                else:
+                    chars_input = tf.nn.embedding_lookup(chars_matrix, data, name='chars_vector_lookup')
+
                 chars_embeddings = tf.nn.embedding_lookup(chars_embeddings_matrix, chars_input, name='chars_emb_lookup')
 
                 chars_embeddings = tf.reshape(chars_embeddings, tf.concat([tf.shape(chars_embeddings)[:-2],
                                                                            [24 * chars_matrix.shape[1]]], axis=0))
 
-                chars_embeddings = tf.layers.dropout(chars_embeddings, 0.25, training=self._training)
+                chars_embeddings = tf.layers.dropout(chars_embeddings, 0.25, training=self._is_training)
                 word_embedding = word_embedding_dense_1(chars_embeddings)
 
-                word_embedding = tf.layers.dropout(word_embedding, 0.25, training=self._training)
-                return word_embedding_dense_2(word_embedding)
+                word_embedding = tf.layers.dropout(word_embedding, 0.25, training=self._is_training)
+                word_embedding = word_embedding_dense_2(word_embedding)
+
+            with tf.variable_scope('grammemes_input'):
+                if not self._is_train_mode:
+                    grammemes_input = data[1]
+                else:
+                    grammemes_input = tf.nn.embedding_lookup(grammemes_matrix, data, name='grammemes_vector_lookup')
+                grammemes_embedding = grammemes_embedding_dense(grammemes_input)
+
+            return tf.concat([word_embedding, grammemes_embedding], axis=-1)
 
         return _apply
 
@@ -110,7 +133,7 @@ class WordEmbeddingsModel:
         start_time = time.time()
         train_step = [self._train_step] if is_train else []
         for i in range(self._train_batchs_count):
-            loss = self._sess.run([self._loss] + train_step, feed_dict={self._training: is_train})[0]
+            loss = self._sess.run([self._loss] + train_step, feed_dict={self._is_training: is_train})[0]
 
             total_loss += loss
 

@@ -35,13 +35,13 @@ class DataInfo:
         return self._label_index[label] if label in self._label_index else DataInfoBuilder.UNK_SYMB_INDEX
 
     def get_lemmatize_rule_index(self, word: str, lemma: str) -> int:
-        # +1 for padding (we don't want to process rules that )
+        # +1 for padding (we don't want to process rules which did not appear in the Morphology)
         return self._get_lemmatize_rule(word, lemma) + 1
 
     def _get_lemmatize_rule(self, word: str, lemma: str) -> int:
         def predict_lemmatize_rule(word: str, lemma: str) -> Tuple[int, str]:
             if len(word) == 0:
-                return (0, lemma)
+                return 0, lemma
 
             common_prefix = commonprefix([word, lemma])
             if len(common_prefix) == 0:
@@ -53,7 +53,7 @@ class DataInfo:
         parses = self._morph.analyse_word(word)
         lemmas = set((parse.lemma, parse.lemmatize_rule_index) for parse in parses)
         if len(lemmas) == 1:
-            return parses[0].lemmatize_rule_index + 1
+            return parses[0].lemmatize_rule_index
         for parsed_lemma, rule_index in lemmas:
             parsed_lemma = parsed_lemma.lower().replace('ё', 'е')
             if parsed_lemma.endswith(lemma) \
@@ -91,6 +91,11 @@ class DataInfo:
     @property
     def word_index(self) -> Mapping:
         return self._word_index
+
+    # TODO: lazy
+    @property
+    def labels(self) -> Tuple[str]:
+        return tuple(label for label, _ in sorted(self._label_index.items(), key=lambda x: x[1]))
 
     def save(self, path: str):
         with open(os.path.join(path, 'data_info.pkl'), 'wb') as f:
@@ -253,7 +258,7 @@ def main():
 
     print(data_info.get_char_index('у'))
     print(data_info.get_word_index('селу'))
-    print(data_info.get_lemmatize_rule_index('селу', 'село'))
+    print(morph.lemmatize_rule_mapping[data_info.get_lemmatize_rule_index('селу', 'село') - 1])
 
     with TemporaryDirectory() as tmpdir:
         data_info.save(tmpdir)
@@ -261,7 +266,7 @@ def main():
 
         print(data_info_restored.get_char_index('у'))
         print(data_info_restored.get_word_index('селу'))
-        print(data_info_restored.get_lemmatize_rule_index('селу', 'село'))
+        print(morph.lemmatize_rule_mapping[data_info_restored.get_lemmatize_rule_index('селу', 'село') - 1])
 
 
 if __name__ == '__main__':
