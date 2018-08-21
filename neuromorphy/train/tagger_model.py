@@ -222,13 +222,13 @@ class TaggerModel:
         print('\r' + (' ' * 180), end='')
         print('\rEpoch = {} / {}. Time = {:05.2f} s. {:>5s} Loss = {:.4f}. Acc = {:.2%}. Lemma Acc = {:.2%}.'.format(
             epoch + 1, epochs_count, time.time() - start_time, name,
-            total_loss / batchs_count, grammar_val_acc, lemma_acc), end='')
+            total_loss / batchs_count, grammar_val_acc, lemma_acc))
 
         self._sess.run(self._reset_ops)
         return total_loss / batchs_count, grammar_val_acc, lemma_acc
 
     def predict(self, chars, grammemes):
-        return self._sess.run(fetches=[self._grammar_val_pred, self._lemma_pred],
+        return self._sess.run(fetches=[self._grammar_val_pred],
                               feed_dict={self._chars: chars, self._grammemems: grammemes})
 
     def save(self, path):

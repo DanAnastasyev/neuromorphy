@@ -63,15 +63,25 @@ class ModelTrainer:
                 [self._data_info.get_char_index(char) for char in word[-self._data_info._max_word_len:]]
             grammemes[0, i] = self._morph.build_grammemes_vector(word)
 
-        grammar_val_indices, lemma_indices = self._model.predict(chars, grammemes)
+        grammar_val_indices = self._model.predict(chars, grammemes)[0]
 
-        print([self._morph.lemmatize_rule_mapping[ind - 1] for ind in lemma_indices[0]])
+        return [self._data_info.labels[grammar_val_ind] for grammar_val_ind in grammar_val_indices[0]]
 
-        for grammar_val_ind, lemma_ind, word in zip(grammar_val_indices[0], lemma_indices[0], sentence):
-            cut, append = self._morph.lemmatize_rule_mapping[lemma_ind - 1]
-            print(cut, append)
-            lemma = (word[:-cut] if cut != 0 else word) + append
-            print(word, lemma, self._data_info.labels[grammar_val_ind])
+    def predict_batch(self, batch):
+        max_sent_len = max(len(sent) for sent in batch)
+        chars = np.zeros((len(batch), max_sent_len, self._data_info._max_word_len))
+        grammemes = np.zeros((len(batch), max_sent_len, self._data_info.grammemes_matrix.shape[-1]))
+
+        for i, sent in enumerate(batch):
+            for j, word in enumerate(sent):
+                chars[i, j, -len(word):] = \
+                    [self._data_info.get_char_index(char) for char in word[-self._data_info._max_word_len:]]
+                grammemes[i, j] = self._morph.build_grammemes_vector(word)
+
+        grammar_val_indices_batch = self._model.predict(chars, grammemes)[0]
+
+        return [[self._data_info.labels[grammar_val_ind] for grammar_val_ind in grammar_val_indices]
+                for grammar_val_indices in grammar_val_indices_batch]
 
 
 def main():
@@ -80,11 +90,23 @@ def main():
                            train_path='UD_Russian-SynTagRus/ru_syntagrus-ud-train.conllu',
                            val_path='UD_Russian-SynTagRus/ru_syntagrus-ud-dev.conllu',
                            test_path='UD_Russian-SynTagRus/ru_syntagrus-ud-test.conllu',
-                           is_train=True)
-    # trainer.fit(100)
+                           is_train=False)
 
-    trainer.predict(["Приемная", "была", "обставлена", "скромно"])
+    import time
+    import tqdm
+    start_time = time.time()
 
+    with CorpusIterator('UD_Russian-SynTagRus/ru_syntagrus-ud-test.conllu') as corpus_iterator, \
+            open('test_preds.txt', 'w', encoding='utf8') as f:
+        for sentence in tqdm.tqdm(corpus_iterator):
+            tokens = [token.token for token in sentence]
+            preds = trainer.predict(tokens)
+            for token, grammar_val in zip(tokens, preds):
+                pos, grammar_val = grammar_val.split('|', maxsplit=1)
+                f.write(token + '\t' + pos + '\t' + grammar_val + '\n')
+            f.write('\n')
+
+    print('File processed in {:.1f} s'.format(time.time() - start_time))
 
 if __name__ == '__main__':
     main()
