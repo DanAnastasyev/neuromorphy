@@ -183,10 +183,11 @@ class TaggerModel:
                 self._reset_ops.append(tf.assign(total_count, 0.))
         return preds
 
-    def fit(self, epochs_count=100):
+    def fit(self, epochs_count=100, save_path=None):
         if self._is_train_mode and self._word_embedding_model.can_be_pretrained:
             self._word_embedding_model.fit(500)
 
+        best_val_acc = None
         for epoch in range(epochs_count):
             if self._is_train_mode:
                 self._sess.run(self._train_init_op)
@@ -194,7 +195,10 @@ class TaggerModel:
 
             if self._val_init_op is not None:
                 self._sess.run(self._val_init_op)
-                self._run_epoch(epoch, epochs_count, is_train=False)
+                _, val_acc, _ = self._run_epoch(epoch, epochs_count, is_train=False)
+                if save_path is not None and (best_val_acc is None or val_acc > best_val_acc):
+                    self.save(save_path)
+                    best_val_acc = val_acc
 
     def _run_epoch(self, epoch, epochs_count, is_train):
         total_loss = 0.
