@@ -48,16 +48,16 @@ class TaggerModel:
             outputs = self._word_embeddings
 
             with tf.variable_scope('encoder'):
-                outputs = tf.layers.dropout(outputs, 0.3, training=self._is_training,
+                outputs = tf.layers.dropout(outputs, 0.4, training=self._is_training,
                                             noise_shape=tf.concat([[1], tf.shape(outputs)[1:]], axis=0))
                 outputs = self._build_rnn('bilstm-1', is_cuda, rnn_dim, outputs,
-                                          state_dropout_rate=0.2, output_dropout_rate=0.3)
+                                          state_dropout_rate=0.25, output_dropout_rate=0.3)
 
                 if self._is_train_mode and self._use_pos_lm:
                     self._build_pos_lm(labels, self._data_info.labels_count, outputs, rnn_dim)
 
                 outputs = self._build_rnn('bilstm-2', is_cuda, rnn_dim, outputs,
-                                          state_dropout_rate=0.2, output_dropout_rate=0.2)
+                                          state_dropout_rate=0.25, output_dropout_rate=0.15)
 
             self._grammar_val_pred = self._build_output('grammar_vals', outputs, labels, self._data_info.labels_count)
             self._lemma_pred = self._build_output('lemmas', outputs, lemma_labels, self._data_info.lemma_labels_count)
@@ -228,7 +228,7 @@ class TaggerModel:
         return total_loss / batchs_count, grammar_val_acc, lemma_acc
 
     def predict(self, chars, grammemes):
-        return self._sess.run(fetches=[self._grammar_val_pred],
+        return self._sess.run(fetches=[self._grammar_val_pred, self._lemma_pred],
                               feed_dict={self._chars: chars, self._grammemems: grammemes})
 
     def save(self, path):

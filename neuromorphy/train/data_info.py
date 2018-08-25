@@ -98,6 +98,9 @@ class DataInfo:
         return tuple(label for label, _ in sorted(self._label_index.items(), key=lambda x: x[1]))
 
     def save(self, path: str):
+        if not os.path.isdir(path):
+            os.makedirs(path)
+
         with open(os.path.join(path, 'data_info.pkl'), 'wb') as f:
             pickle.dump((
                 self._lemmatize_rule_index, self._label_index, self._char_index,

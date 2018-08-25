@@ -46,13 +46,11 @@ class ModelTrainer:
             self._model.restore(model_path)
 
     def fit(self, epochs_count=200):
+        self._data_info.save(self._model_path)
         try:
-            self._model.fit(epochs_count=epochs_count)
+            self._model.fit(epochs_count=epochs_count, save_path=self._model_path)
         except KeyboardInterrupt:
             pass
-
-        self._model.save(self._model_path)
-        self._data_info.save(self._model_path)
 
     def predict(self, sentence):
         chars = np.zeros((1, len(sentence), self._data_info._max_word_len))
@@ -63,9 +61,16 @@ class ModelTrainer:
                 [self._data_info.get_char_index(char) for char in word[-self._data_info._max_word_len:]]
             grammemes[0, i] = self._morph.build_grammemes_vector(word)
 
-        grammar_val_indices = self._model.predict(chars, grammemes)[0]
+        grammar_val_indices, lemma_indices = self._model.predict(chars, grammemes)
 
-        return [self._data_info.labels[grammar_val_ind] for grammar_val_ind in grammar_val_indices[0]]
+        def get_lemma(word, ind):
+            cut, append = self._morph.lemmatize_rule_mapping[ind - 1]
+            return (word[:-cut] if cut != 0 else word) + append
+
+        lemmas = [get_lemma(word, ind) for word, ind in zip(sentence, lemma_indices[0])]
+        return grammar_val_indices[0], lemmas
+
+        # return [self._data_info.labels[grammar_val_ind] for grammar_val_ind in grammar_val_indices[0]], lemmas
 
     def predict_batch(self, batch):
         max_sent_len = max(len(sent) for sent in batch)
@@ -84,29 +89,66 @@ class ModelTrainer:
                 for grammar_val_indices in grammar_val_indices_batch]
 
 
-def main():
-    trainer = ModelTrainer(model_path='Model',
-                           dict_path='RussianDict.zip',
-                           train_path='UD_Russian-SynTagRus/ru_syntagrus-ud-train.conllu',
-                           val_path='UD_Russian-SynTagRus/ru_syntagrus-ud-dev.conllu',
-                           test_path='UD_Russian-SynTagRus/ru_syntagrus-ud-test.conllu',
-                           is_train=False)
+def load_pretrained_model():
+    return ModelTrainer(model_path='Model', dict_path='RussianDict.zip', train_path=None, val_path=None, is_train=False)
 
+
+def parse_syntagrus_test():
     import time
     import tqdm
+
     start_time = time.time()
+    model = load_pretrained_model()
 
     with CorpusIterator('UD_Russian-SynTagRus/ru_syntagrus-ud-test.conllu') as corpus_iterator, \
             open('test_preds.txt', 'w', encoding='utf8') as f:
         for sentence in tqdm.tqdm(corpus_iterator):
             tokens = [token.token for token in sentence]
-            preds = trainer.predict(tokens)
-            for token, grammar_val in zip(tokens, preds):
+            preds, lemmas = model.predict(tokens)
+            for token, grammar_val, lemma in zip(tokens, preds, lemmas):
                 pos, grammar_val = grammar_val.split('|', maxsplit=1)
-                f.write(token + '\t' + pos + '\t' + grammar_val + '\n')
+                f.write(token + '\t' + pos + '\t' + grammar_val + '\t' + lemma + '\n')
             f.write('\n')
 
     print('File processed in {:.1f} s'.format(time.time() - start_time))
 
+
+def read_corpus(path):
+    from nltk.tokenize import sent_tokenize, wordpunct_tokenize
+
+    skip_symbols = {'-', '-', '–', '—', '―', '"', "'", '‘', '’', '“'}
+    if os.path.isfile(path):
+        paths = [path]
+    elif os.path.isdir(path):
+        paths = [os.path.join(path, file_name) for file_name in os.listdir(path)]
+    else:
+        assert False
+
+    for path in paths:
+        with open(path, encoding='utf8') as f:
+            for line in f:
+                line = line.strip()
+
+                if len(line.split()) < 10 or line[0] in skip_symbols:
+                    continue
+
+                for sent in sent_tokenize(line):
+                    yield wordpunct_tokenize(sent)
+                yield []
+
+
+def parse_plain_text(path):
+    import tqdm
+
+    model = load_pretrained_model()
+    with open(os.path.splitext(path)[0] + '_parsed.txt', 'w', encoding='utf8') as f:
+        for sent in tqdm.tqdm(read_corpus(path)):
+            if not sent:
+                f.write('\n')
+            gram_vals, lemmas = model.predict(sent)
+            for grammar_val, lemma in zip(gram_vals, lemmas):
+                f.write(lemma + '_' + str(grammar_val) + ' ')
+
+
 if __name__ == '__main__':
-    main()
+    parse_plain_text('beda.txt')
